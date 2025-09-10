@@ -10,22 +10,22 @@ const DEVICE_PORT = parseInt(process.env.DEVICE_PORT || "4370", 10);
 const TIMEZONE = "Asia/Karachi";
 const zk = new ZKLib(DEVICE_IP, DEVICE_PORT, 10000, 4000);
 
-// format datetime in PKT
-function formatLocal(date) {
-  if (!date) return "N/A";
-  return new Date(date).toLocaleString("en-PK", {
+// format datetime in both UTC + PKT
+function formatTimes(date) {
+  if (!date) return { utc: "N/A", pkt: "N/A" };
+  const utc = new Date(date).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  const pkt = new Date(date).toLocaleString("en-PK", {
     timeZone: TIMEZONE,
     hour12: true,
   });
+  return { utc, pkt };
 }
 
 // get date-only in PKT
 function dateOnlyPKT(date) {
   return new Date(
     new Date(date).toLocaleString("en-US", { timeZone: TIMEZONE })
-  )
-    .toISOString()
-    .slice(0, 10);
+  ).toISOString().slice(0, 10);
 }
 
 async function fetchLogs() {
@@ -33,23 +33,27 @@ async function fetchLogs() {
     await zk.createSocket();
     console.log("✅ Connected to device");
 
+    // 🔹 Check device time
     const before = await zk.getTime();
-    console.log("📅 Device time before sync:", formatLocal(before));
+    const { utc: beforeUtc, pkt: beforePkt } = formatTimes(before);
+    console.log(`📅 Device time BEFORE sync → UTC=${beforeUtc}, PKT=${beforePkt}`);
 
-    const now = new Date();
-    await zk.setTime(now);
-    console.log("⏰ Device time sync command sent");
+    const systemNow = new Date();
+    const drift = (before.getTime() - systemNow.getTime()) / 1000;
 
-    await zk.disconnect();
-    await new Promise(r => setTimeout(r, 1500));
-    await zk.createSocket();
-    console.log("ok tcp");
+    // 🔹 Always check drift dynamically
+    if (Math.abs(drift) > 5) {
+      await zk.setTime(systemNow); // write PKT/UTC depending on driver
+      console.log(`⏰ Device time reset applied (drift=${drift.toFixed(3)}s)`);
 
-    const after = await zk.getTime();
-    console.log("📅 Device time after sync:", formatLocal(after));
+      const after = await zk.getTime();
+      const { utc: afterUtc, pkt: afterPkt } = formatTimes(after);
+      console.log(`📅 Device time AFTER sync → UTC=${afterUtc}, PKT=${afterPkt}`);
+    } else {
+      console.log("⏰ Device time ok, no reset needed");
+    }
 
-    await zk.freeData().catch(() => {});
-
+    // 🔹 Fetch logs
     const logs = await zk.getAttendances();
     const logCount = logs?.data?.length || 0;
     console.log(`📥 Got ${logCount} logs`);
@@ -76,28 +80,27 @@ async function fetchLogs() {
         .replace("T", " ");
 
       if (dateOnlyPKT(raw) !== systemToday) {
-        console.log(`⏭️ Skipping old log for ${emp.name} (${deviceId}) at ${punchTime}`);
+        console.log(`⏭️ Skipping non-today log for ${emp.name} (${deviceId}) at ${punchTime}`);
         continue;
       }
 
-      console.log(
-        `📝 DeviceID=${deviceId}, OdooID=${emp.id}, Name=${emp.name}, Raw=${raw.toISOString()}, Local=${formatLocal(raw)}`
-      );
+      const { utc: rawUtc, pkt: rawPkt } = formatTimes(raw);
 
-      // ✅ pass deviceId (string) and punchTime, NOT the whole emp object
+      console.log(`📝 DeviceID=${deviceId}, OdooID=${emp.id}, Name=${emp.name}, RawUTC=${rawUtc}, LocalPKT=${rawPkt}`);
+
       await processPunch(deviceId, punchTime);
     }
   } catch (err) {
     console.error("❌ Error:", err.message);
   } finally {
-    await zk.disconnect();
+    await zk.disconnect().catch(() => {});
     console.log("🔌 Disconnected");
   }
 }
 
 async function streamLogs() {
   await fetchLogs();
-  setTimeout(streamLogs, 10000);
+  setTimeout(streamLogs, 10000); // check every 10s
 }
 
 (async () => {
