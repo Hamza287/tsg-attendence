@@ -13,15 +13,15 @@ export async function buildEmployeeMap() {
 
   if (employees) {
     employees.forEach(emp => {
-      // 🔹 Use barcode as the key if set, otherwise fallback to id
       const deviceId = emp.barcode ? String(emp.barcode).trim() : String(emp.id);
+      if (!empMap[deviceId]) empMap[deviceId] = [];
 
-      empMap[deviceId] = {
+      empMap[deviceId].push({
         id: emp.id,
         name: emp.name,
         companyId: emp.company_id ? emp.company_id[0] : null,
         companyName: emp.company_id ? emp.company_id[1] : null,
-      };
+      });
     });
     console.log(`📌 Loaded ${employees.length} employees across companies`);
     console.log("📌 Map keys preview:", Object.keys(empMap).slice(0, 20));
@@ -30,6 +30,7 @@ export async function buildEmployeeMap() {
   return empMap;
 }
 
-export function getEmployee(deviceId) {
-  return empMap[String(deviceId).trim()] || null;
+// ✅ Always return array
+export function getEmployees(deviceId) {
+  return empMap[String(deviceId).trim()] || [];
 }

@@ -7,41 +7,44 @@ export async function processPunch(deviceId, punches, emp) {
       console.log(`❌ No Odoo employee mapped for deviceUserId=${deviceId}`);
       return;
     }
-
     if (punches.length === 0) return;
 
     const checkIn = punches[0];
-    const checkOut = punches[punches.length - 1];
+    const checkOut = punches.length > 1 ? punches[punches.length - 1] : null;
 
-    // rule: if IN and OUT are same, treat it only as check-in
-    const finalCheckOut = checkIn !== checkOut ? checkOut : null;
+    // 🔹 Use PKT day of the punch (not system today)
+    const punchDay = checkIn.slice(0, 10); // YYYY-MM-DD
 
-    const today = new Date().toISOString().slice(0, 10);
+    console.log(`🔍 Searching Odoo for ${emp.name} (ID=${emp.id}) on ${punchDay}`);
 
-    // find today's attendance
+    // ✅ Restrict query to this punch date only
     const existing = await callOdoo("hr.attendance", "search_read", [
-      [["employee_id", "=", emp.id], ["check_in", ">=", today]],
-      ["id", "check_in", "check_out"]
+      [
+        ["employee_id", "=", emp.id],
+        ["check_in", ">=", `${punchDay} 00:00:00`],
+        ["check_in", "<=", `${punchDay} 23:59:59`],
+      ],
+      ["id", "check_in", "check_out"],
     ]);
 
-    if (existing.length === 0) {
-      // create new record
-      await callOdoo("hr.attendance", "create", [[{
-        employee_id: emp.id,
-        check_in: checkIn,
-        ...(finalCheckOut ? { check_out: finalCheckOut } : {})
-      }]]);
-      console.log(`✅ Created attendance for ${emp.name}: IN=${checkIn} OUT=${finalCheckOut || "—"}`);
+    if (!existing || existing.length === 0) {
+      // 🔹 New record
+      const vals = { employee_id: emp.id, check_in: checkIn };
+      if (checkOut) vals.check_out = checkOut;
+
+      console.log(`📤 Sending CREATE to Odoo:`, JSON.stringify(vals, null, 2));
+      await callOdoo("hr.attendance", "create", [[vals]]);
+      console.log(`✅ Created attendance for ${emp.name}: IN=${checkIn} OUT=${checkOut || "—"}`);
     } else {
       const att = existing[0];
       const vals = {};
 
+      // Update only if needed
       if (!att.check_in || checkIn < att.check_in) vals.check_in = checkIn;
-      if (finalCheckOut && (!att.check_out || finalCheckOut > att.check_out)) {
-        vals.check_out = finalCheckOut;
-      }
+      if (checkOut && (!att.check_out || checkOut > att.check_out)) vals.check_out = checkOut;
 
       if (Object.keys(vals).length > 0) {
+        console.log(`📤 Sending UPDATE to Odoo for #${att.id}:`, JSON.stringify(vals, null, 2));
         await callOdoo("hr.attendance", "write", [[att.id], vals]);
         console.log(`✅ Updated attendance for ${emp.name}:`, vals);
       } else {
@@ -49,6 +52,6 @@ export async function processPunch(deviceId, punches, emp) {
       }
     }
   } catch (err) {
-    console.error(`❌ processPunch error:`, err.message);
+    console.error(`❌ processPunch error for ${emp?.name || deviceId}:`, err.message);
   }
 }
