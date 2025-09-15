@@ -1,8 +1,7 @@
-// index.js
-import ZKLib from "node-zklib";
-import dotenv from "dotenv";
-import { processPunch } from "./processPunch.js";
-import { buildEmployeeMap, getEmployees } from "./sync.js";
+const ZKLib = require("node-zklib");
+const dotenv = require("dotenv");
+const { processPunch } = require("./processPunch.js");
+const { buildEmployeeMap, getEmployees } = require("./sync.js");
 
 dotenv.config();
 

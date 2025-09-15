@@ -1,7 +1,7 @@
-// processPunch.js
-import { callOdoo } from "./odoo.js";
+// processPunch.js (CommonJS)
+const { callOdoo } = require("./odoo.js");
 
-export async function processPunch(deviceId, punches, emp) {
+async function processPunch(deviceId, punches, emp) {
   try {
     if (!emp) {
       console.log(`❌ No Odoo employee mapped for deviceUserId=${deviceId}`);
@@ -12,12 +12,11 @@ export async function processPunch(deviceId, punches, emp) {
     const checkIn = punches[0];
     const checkOut = punches.length > 1 ? punches[punches.length - 1] : null;
 
-    // 🔹 Use PKT day of the punch (not system today)
-    const punchDay = checkIn.slice(0, 10); // YYYY-MM-DD
+    // 🔹 Use PKT day of the punch
+    const punchDay = checkIn.slice(0, 10);
 
     console.log(`🔍 Searching Odoo for ${emp.name} (ID=${emp.id}) on ${punchDay}`);
 
-    // ✅ Restrict query to this punch date only
     const existing = await callOdoo("hr.attendance", "search_read", [
       [
         ["employee_id", "=", emp.id],
@@ -28,7 +27,6 @@ export async function processPunch(deviceId, punches, emp) {
     ]);
 
     if (!existing || existing.length === 0) {
-      // 🔹 New record
       const vals = { employee_id: emp.id, check_in: checkIn };
       if (checkOut) vals.check_out = checkOut;
 
@@ -39,7 +37,6 @@ export async function processPunch(deviceId, punches, emp) {
       const att = existing[0];
       const vals = {};
 
-      // Update only if needed
       if (!att.check_in || checkIn < att.check_in) vals.check_in = checkIn;
       if (checkOut && (!att.check_out || checkOut > att.check_out)) vals.check_out = checkOut;
 
@@ -55,3 +52,5 @@ export async function processPunch(deviceId, punches, emp) {
     console.error(`❌ processPunch error for ${emp?.name || deviceId}:`, err.message);
   }
 }
+
+module.exports = { processPunch };
