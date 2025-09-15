@@ -1,7 +1,9 @@
-import ZKLib from "node-zklib";
 import dotenv from "dotenv";
+import pkg from "node-zklib";
 import { processPunch } from "./processPunch.js";
 import { buildEmployeeMap, getEmployees } from "./sync.js";
+
+const { ZKLib } = pkg; // ✅ extract class
 
 dotenv.config();
 
