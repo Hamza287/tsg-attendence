@@ -23,9 +23,8 @@ async function fetchLogs() {
   try {
     await zk.createSocket();
     console.log("✅ Connected to device");
-
     // sync device time if drift > 5s
-    const before = await zk.getTime();
+    const before = await zk.getTime(); 
     const systemNow = new Date();
     const drift = (before.getTime() - systemNow.getTime()) / 1000;
     if (Math.abs(drift) > 5) {
