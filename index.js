@@ -1,31 +1,22 @@
+// index.js
 import ZKLib from "node-zklib";
 import dotenv from "dotenv";
 import { processPunch } from "./processPunch.js";
-import { loadEmployeeMap, getOdooEmployee } from "./employeeMap.js";
+import { buildEmployeeMap, getEmployee } from "./sync.js";
 
 dotenv.config();
 
-const DEVICE_IP = process.env.DEVICE_IP || "192.168.18.150";
-const DEVICE_PORT = parseInt(process.env.DEVICE_PORT || "4370", 10);
-const TIMEZONE = "Asia/Karachi";
+const DEVICE_IP = process.env.DEVICE_IP;
+const DEVICE_PORT = parseInt(process.env.DEVICE_PORT, 10);
+const TIMEZONE = process.env.TIMEZONE || "Asia/Karachi";
 const zk = new ZKLib(DEVICE_IP, DEVICE_PORT, 10000, 4000);
 
-// format datetime in both UTC + PKT
-function formatTimes(date) {
-  if (!date) return { utc: "N/A", pkt: "N/A" };
-  const utc = new Date(date).toISOString().replace("T", " ").slice(0, 19) + " UTC";
-  const pkt = new Date(date).toLocaleString("en-PK", {
-    timeZone: TIMEZONE,
-    hour12: true,
-  });
-  return { utc, pkt };
+function formatUTC(date) {
+  return new Date(date).toISOString().replace("T", " ").slice(0, 19);
 }
 
-// get date-only in PKT
 function dateOnlyPKT(date) {
-  return new Date(
-    new Date(date).toLocaleString("en-US", { timeZone: TIMEZONE })
-  ).toISOString().slice(0, 10);
+  return new Date(date).toLocaleDateString("en-CA", { timeZone: TIMEZONE });
 }
 
 async function fetchLogs() {
@@ -33,62 +24,51 @@ async function fetchLogs() {
     await zk.createSocket();
     console.log("✅ Connected to device");
 
-    // 🔹 Check device time
+    // sync device time if drift > 5s
     const before = await zk.getTime();
-    const { utc: beforeUtc, pkt: beforePkt } = formatTimes(before);
-    console.log(`📅 Device time BEFORE sync → UTC=${beforeUtc}, PKT=${beforePkt}`);
-
     const systemNow = new Date();
     const drift = (before.getTime() - systemNow.getTime()) / 1000;
-
-    // 🔹 Always check drift dynamically
     if (Math.abs(drift) > 5) {
-      await zk.setTime(systemNow); // write PKT/UTC depending on driver
-      console.log(`⏰ Device time reset applied (drift=${drift.toFixed(3)}s)`);
-
-      const after = await zk.getTime();
-      const { utc: afterUtc, pkt: afterPkt } = formatTimes(after);
-      console.log(`📅 Device time AFTER sync → UTC=${afterUtc}, PKT=${afterPkt}`);
-    } else {
-      console.log("⏰ Device time ok, no reset needed");
+      await zk.setTime(systemNow);
+      console.log(`⏰ Device time reset (drift=${drift.toFixed(3)}s)`);
     }
 
-    // 🔹 Fetch logs
+    // fetch logs
     const logs = await zk.getAttendances();
-    const logCount = logs?.data?.length || 0;
-    console.log(`📥 Got ${logCount} logs`);
-
-    const systemToday = dateOnlyPKT(new Date());
-    if (logCount === 0) return;
+    const today = dateOnlyPKT(new Date());
+    const punchesByEmp = {};
 
     for (const rec of logs.data) {
       if (!rec?.recordTime) continue;
       const raw = new Date(rec.recordTime);
+      if (dateOnlyPKT(raw) !== today) continue;
+
       const deviceId = String(rec.deviceUserId).trim();
+      const emp = getEmployee(deviceId);
+      if (!emp) continue;
 
-      const emp = getOdooEmployee(deviceId);
-      if (!emp) {
-        console.log(`❌ No Odoo employee mapped for deviceUserId=${deviceId}`);
-        continue;
+      if (!punchesByEmp[deviceId]) punchesByEmp[deviceId] = [];
+      punchesByEmp[deviceId].push(formatUTC(raw));
+    }
+
+    // summarize per employee
+    console.log("\n📌 Today's Attendance\n");
+    for (const [deviceId, punches] of Object.entries(punchesByEmp)) {
+      punches.sort(); // ensure order
+      const emp = getEmployee(deviceId);
+      const checkIn = punches[0];
+      const checkOut = punches[punches.length - 1];
+
+      console.log(`👤 Employee: ${emp.name} (DeviceID=${deviceId})`);
+      console.log(`   Check-In  → ${checkIn}`);
+      if (checkOut !== checkIn) {
+        console.log(`   Check-Out → ${checkOut}`);
+        await processPunch(deviceId, [checkIn, checkOut], emp);
+      } else {
+        console.log("   Check-Out → —");
+        await processPunch(deviceId, [checkIn], emp);
       }
-
-      const punchTime = new Date(
-        raw.toLocaleString("en-US", { timeZone: TIMEZONE })
-      )
-        .toISOString()
-        .slice(0, 19)
-        .replace("T", " ");
-
-      if (dateOnlyPKT(raw) !== systemToday) {
-        console.log(`⏭️ Skipping non-today log for ${emp.name} (${deviceId}) at ${punchTime}`);
-        continue;
-      }
-
-      const { utc: rawUtc, pkt: rawPkt } = formatTimes(raw);
-
-      console.log(`📝 DeviceID=${deviceId}, OdooID=${emp.id}, Name=${emp.name}, RawUTC=${rawUtc}, LocalPKT=${rawPkt}`);
-
-      await processPunch(deviceId, punchTime);
+      console.log("");
     }
   } catch (err) {
     console.error("❌ Error:", err.message);
@@ -100,10 +80,10 @@ async function fetchLogs() {
 
 async function streamLogs() {
   await fetchLogs();
-  setTimeout(streamLogs, 10000); // check every 10s
+  setTimeout(streamLogs, 10000);
 }
 
 (async () => {
-  await loadEmployeeMap();
+  await buildEmployeeMap();
   streamLogs();
 })();

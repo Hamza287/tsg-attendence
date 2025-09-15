@@ -1,3 +1,4 @@
+// odoo.js
 import axios from "axios";
 import dotenv from "dotenv";
 dotenv.config();
@@ -7,7 +8,7 @@ const ODOO_DB = process.env.ODOO_DB;
 const ODOO_UID = parseInt(process.env.ODOO_UID, 10);
 const ODOO_PASSWORD = process.env.ODOO_PASSWORD;
 
-export async function callOdoo(model, method, args, kwargs = {}) {
+export async function callOdoo(model, method, args = [], kwargs = {}) {
   try {
     const body = {
       jsonrpc: "2.0",
