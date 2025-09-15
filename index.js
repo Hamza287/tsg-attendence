@@ -5,7 +5,7 @@ const { buildEmployeeMap, getEmployees } = require("./sync.cjs");
 
 
 
-const { ZKLib } = pkg; // ✅ extract class
+const { ZKLib } = require("node-zklib");
 
 dotenv.config();
 
