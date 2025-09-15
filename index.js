@@ -3,10 +3,6 @@ const { ZKLib } = require("node-zklib");
 const { processPunch } = require("./processPunch.cjs");
 const { buildEmployeeMap, getEmployees } = require("./sync.cjs");
 
-
-
-const { ZKLib } = require("node-zklib");
-
 dotenv.config();
 
 const DEVICE_IP = process.env.DEVICE_IP;
