@@ -1,7 +1,7 @@
-// processPunch.js (CommonJS)
-const { callOdoo } = require("./odoo.js");
+// processPunch.js
+import { callOdoo } from "./odoo.js";
 
-async function processPunch(deviceId, punches, emp) {
+export async function processPunch(deviceId, punches, emp) {
   try {
     if (!emp) {
       console.log(`❌ No Odoo employee mapped for deviceUserId=${deviceId}`);
@@ -12,11 +12,35 @@ async function processPunch(deviceId, punches, emp) {
     const checkIn = punches[0];
     const checkOut = punches.length > 1 ? punches[punches.length - 1] : null;
 
-    // 🔹 Use PKT day of the punch
-    const punchDay = checkIn.slice(0, 10);
-
+    const punchDay = checkIn.slice(0, 10); // YYYY-MM-DD
     console.log(`🔍 Searching Odoo for ${emp.name} (ID=${emp.id}) on ${punchDay}`);
 
+    // ✅ First look for open attendances (no check_out)
+    const openAtt = await callOdoo("hr.attendance", "search_read", [
+      [["employee_id", "=", emp.id], ["check_out", "=", false]],
+      ["id", "check_in", "check_out"],
+    ]);
+
+    if (openAtt && openAtt.length > 0) {
+      const att = openAtt[0];
+      const vals = {};
+
+      // only update check_out if we have a later punch
+      if (checkOut && (!att.check_out || checkOut > att.check_out)) {
+        vals.check_out = checkOut;
+      }
+
+      if (Object.keys(vals).length > 0) {
+        console.log(`📤 Closing open attendance #${att.id}:`, vals);
+        await callOdoo("hr.attendance", "write", [[att.id], vals]);
+        console.log(`✅ Closed attendance for ${emp.name}:`, vals);
+      } else {
+        console.log(`⏭️ No update needed for ${emp.name} (open record)`);
+      }
+      return; // done ✅
+    }
+
+    // ✅ Otherwise, look for today's attendance
     const existing = await callOdoo("hr.attendance", "search_read", [
       [
         ["employee_id", "=", emp.id],
@@ -41,7 +65,7 @@ async function processPunch(deviceId, punches, emp) {
       if (checkOut && (!att.check_out || checkOut > att.check_out)) vals.check_out = checkOut;
 
       if (Object.keys(vals).length > 0) {
-        console.log(`📤 Sending UPDATE to Odoo for #${att.id}:`, JSON.stringify(vals, null, 2));
+        console.log(`📤 Updating attendance #${att.id}:`, vals);
         await callOdoo("hr.attendance", "write", [[att.id], vals]);
         console.log(`✅ Updated attendance for ${emp.name}:`, vals);
       } else {
@@ -52,5 +76,3 @@ async function processPunch(deviceId, punches, emp) {
     console.error(`❌ processPunch error for ${emp?.name || deviceId}:`, err.message);
   }
 }
-
-module.exports = { processPunch };
