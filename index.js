@@ -16,12 +16,13 @@ function fmtPK(dateObj) {
 function datePK(dateObj) {
   return dateObj.toLocaleDateString("en-CA", { timeZone: "Asia/Karachi" });
 }
-// ✅ Global helper: Force timestamp into PKT
+
 function forcePK(date) {
   return new Date(
     new Date(date).toLocaleString("en-US", { timeZone: "Asia/Karachi" })
   );
 }
+
 
 // --- Safe connect with backoff ---
 async function safeConnect(device, retries = 0) {

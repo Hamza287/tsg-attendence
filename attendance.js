@@ -1,9 +1,15 @@
 // attendance.js
 import { callOdoo } from "./odoo.js";
 
+// attendance.js
 function toOdooDatetime(date) {
-  return new Date(date).toISOString().slice(0, 19).replace("T", " ");
+  // Normalize device punch time to Pakistan (Asia/Karachi), then send UTC to Odoo
+  const pktDate = new Date(
+    new Date(date).toLocaleString("en-US", { timeZone: "Asia/Karachi" })
+  );
+  return pktDate.toISOString().slice(0, 19).replace("T", " ");
 }
+
 
 export async function injectPunch(employeeId, ts, state) {
   const dt = toOdooDatetime(ts);
