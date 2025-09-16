@@ -30,37 +30,41 @@ export default class Device extends EventEmitter {
     }
   }
 
-  async connect() {
-    try {
-      await this.zk.createSocket(
-        (err) => {
-          console.error("⚠️ Socket error:", err?.message || err);
-          this.connected = false;
-        },
-        () => {
-          console.warn("⚡ Socket closed");
-          this.connected = false;
-        }
-      );
-
-      const ok = await this.zk.connect();
-      if (!ok) throw new Error("CMD_CONNECT failed (no reply from device)");
-
-      this.connected = true;
-      await this.syncTime();
-
-      if (!this.keepSyncing) {
-        this.keepSyncing = true;
-        this.startAutoTimeSync();
-      }
-
-      console.log(`✅ Connected to device ${this.zk.ip}`);
-      this.emit("reconnected"); // 🔑 notify listeners
-    } catch (err) {
-      console.error("❌ Device connect failed:", err?.message || err);
-      this.connected = false;
+async connect() {
+  try {
+    if (this.socket) {
+      this.socket.destroy();   // 🔴 force close old socket
+      this.socket = null;
     }
+
+    await this.zk.createSocket(
+      (err) => {
+        console.error("⚠️ Socket error:", err?.message || err);
+        this.connected = false;
+      },
+      () => {
+        console.warn("⚡ Socket closed");
+        this.connected = false;
+      }
+    );
+
+    const ok = await this.zk.connect();
+    if (!ok) throw new Error("CMD_CONNECT failed (no reply from device)");
+
+    this.connected = true;
+    await this.syncTime();
+    if (!this.keepSyncing) {
+      this.keepSyncing = true;
+      this.startAutoTimeSync();
+    }
+
+    console.log(`✅ Connected to device ${this.zk.ip}`);
+  } catch (err) {
+    console.error("❌ Device connect failed:", err?.message || err);
+    this.connected = false;
   }
+}
+
 
   async safeGetTime() {
     try {
