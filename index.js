@@ -1,116 +1,159 @@
-const dotenv = require("dotenv");
-const { ZKLib } = require("node-zklib");
-const { processPunch } = require("./processPunch.cjs");
-const { buildEmployeeMap, getEmployees } = require("./sync.cjs");
+// index.js
+import dotenv from "dotenv";
+import Device from "./device.js";
+import { syncEmployees } from "./sync.js";
+import { injectPunch } from "./attendance.js";
 
 dotenv.config();
 
-const DEVICE_IP = process.env.DEVICE_IP;
-const DEVICE_PORT = parseInt(process.env.DEVICE_PORT, 10);
-const TIMEZONE = process.env.TIMEZONE || "Asia/Karachi";
-const zk = new ZKLib(DEVICE_IP, DEVICE_PORT, 10000, 4000);
-
-// Format UTC into string for Odoo (YYYY-MM-DD HH:mm:ss)
-function formatUTC(date) {
-  return new Date(date).toISOString().replace("T", " ").slice(0, 19);
+// --- Helpers ---
+function todayPK() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Karachi" });
+}
+function fmtPK(dateObj) {
+  if (!dateObj) return "Invalid";
+  return dateObj.toLocaleString("en-PK", { timeZone: "Asia/Karachi" });
+}
+function datePK(dateObj) {
+  return dateObj.toLocaleDateString("en-CA", { timeZone: "Asia/Karachi" });
 }
 
-// Get only date in PKT (YYYY-MM-DD)
-function dateOnlyPKT(date) {
-  return new Date(date).toLocaleDateString("en-CA", { timeZone: TIMEZONE });
-}
-
-// Convert device recordTime → PKT Date object
-function toPKT(date) {
-  return new Date(date.toLocaleString("en-US", { timeZone: TIMEZONE }));
-}
-
-async function fetchLogs() {
-  try {
-    await zk.createSocket();
-    console.log("ok tcp");
-    console.log("✅ Connected to device");
-
-    // check drift
-    const before = await zk.getTime();
-    const systemNow = new Date();
-    const drift = (before.getTime() - systemNow.getTime()) / 1000;
-
-    console.log(`⏱️ System Time (PKT): ${systemNow.toLocaleString("en-PK", { timeZone: TIMEZONE })}`);
-    console.log(`⏱️ Device Time (PKT): ${before.toLocaleString("en-PK", { timeZone: TIMEZONE })}`);
-
-    if (Math.abs(drift) > 5) {
-      await zk.setTime(systemNow);
-      console.log(`✅ Device time corrected (drift=${drift.toFixed(2)}s)`);
-      const after = await zk.getTime();
-      console.log(`⏱️ Device Time (after sync, PKT): ${after.toLocaleString("en-PK", { timeZone: TIMEZONE })}`);
-    }
-
-    // fetch logs
-    const logs = await zk.getAttendances();
-
-    // ✅ Only today’s punches
-    const todayPKT = dateOnlyPKT(new Date());
-    const punchesByEmp = {};
-
-    for (const rec of logs.data) {
-      if (!rec?.recordTime) continue;
-
-      const rawUTC = new Date(rec.recordTime);
-      const rawPKT = toPKT(rawUTC);
-
-      const punchDate = dateOnlyPKT(rawPKT);
-      if (punchDate !== todayPKT) continue; // ✅ strictly today only
-
-      const deviceId = String(rec.deviceUserId).trim();
-      const emps = getEmployees(deviceId);
-      if (!emps || emps.length === 0) {
-        console.log(`❌ No Odoo employee mapped for deviceUserId=${deviceId}`);
-        continue;
-      }
-
-      if (!punchesByEmp[deviceId]) punchesByEmp[deviceId] = [];
-      punchesByEmp[deviceId].push(formatUTC(rawPKT));
-    }
-
-    // summarize + push to Odoo
-    console.log(`\n📌 Attendance Records (Today ${todayPKT})\n`);
-    for (const [deviceId, punches] of Object.entries(punchesByEmp)) {
-      punches.sort();
-      const checkIn = punches[0];
-      const checkOut = punches[punches.length - 1];
-
-      const emps = getEmployees(deviceId);
-      for (const emp of emps) {
-        console.log(`👤 Employee: ${emp.name} (${emp.companyName}, DeviceID=${deviceId})`);
-        console.log(`   Check-In  → ${checkIn}`);
-        if (checkOut !== checkIn) {
-          console.log(`   Check-Out → ${checkOut}`);
-          await processPunch(deviceId, [checkIn, checkOut], emp);
-        } else {
-          console.log("   Check-Out → —");
-          await processPunch(deviceId, [checkIn], emp);
-        }
-        console.log("");
-      }
-    }
-  } catch (err) {
-    console.error("❌ Fetch error:", err);
-  } finally {
-    await zk.disconnect().catch(() => {});
-    console.log("🔌 Disconnected");
-  }
-}
-
-async function streamLogs() {
-  console.log("\n==============================");
-  console.log(`🕒 Fetch cycle at (PKT): ${new Date().toLocaleString("en-PK", { timeZone: TIMEZONE })}`);
-  console.log("==============================");
-  await fetchLogs();
-  setTimeout(streamLogs, 10000); // every 10 seconds
-}
-
+// --- Main ---
 (async () => {
-  await buildEmployeeMap();
-  streamLogs();
+  const employeeMap = await syncEmployees();
+  const device = new Device(process.env.DEVICE_IP, process.env.DEVICE_PORT);
+
+  await device.connect();
+
+  try {
+    const info = await device.zk.getInfo();
+    console.log("ℹ️ Device Info:", info);
+  } catch (err) {
+    console.warn("⚠️ Could not fetch device info:", err.message);
+  }
+
+  // 🔄 Keep syncing device time every 5s
+  setInterval(() => {
+    device.syncTime();
+  }, 5 * 1000);
+
+  // 🔄 Refresh logs every minute
+  const refreshLogs = async () => {
+    try {
+      const logs = await device.fetchAllLogs();
+      const users = await device.getUsers();
+
+      console.log("📥 Device Raw Logs (first 10):");
+      console.dir(logs.slice(0, 10), { depth: null });
+
+      console.log("📥 Device Users (first 10):");
+      console.dir(users.slice(0, 10), { depth: null });
+
+      // Build User Map
+      const userMap = new Map();
+      for (const [barcode, employees] of employeeMap.entries()) {
+        const name = employees[0]?.name;
+        if (barcode && name) userMap.set(String(barcode), name);
+      }
+      for (const u of users) {
+        if (!userMap.has(String(u.userId))) {
+          userMap.set(String(u.userId), u.name);
+        }
+      }
+
+      console.log(`📡 Raw logs fetched: ${logs.length}`);
+
+      const today = todayPK();
+      const todaysLogs = logs.filter((log) => {
+        const d = new Date(log.timestamp);
+        return datePK(d) === today;
+      });
+
+      console.log(`📡 Filtered for today (${today}): ${todaysLogs.length}`);
+
+      // --- Show daily table (Check-In / Check-Out) ---
+      if (todaysLogs.length > 0) {
+        const enriched = todaysLogs.map((log) => ({
+          userId: log.userId,
+          name: userMap.get(log.userId) || "Unknown",
+          timestamp: fmtPK(new Date(log.timestamp)),
+          type: log.type,
+          state: log.state,
+        }));
+
+        const checkIns = enriched.filter((log) => log.state === 0);
+        const checkOuts = enriched.filter((log) => log.state === 1);
+
+        console.log("🟢 Today's Check-Ins:");
+        console.table(checkIns);
+
+        console.log("🔴 Today's Check-Outs:");
+        console.table(checkOuts);
+      }
+
+      // --- Push logs to Odoo ---
+      for (const log of todaysLogs) {
+        const userId = String(log.userId);
+        const empList = employeeMap.get(userId);
+
+        if (!empList) {
+          console.warn(`⚠️ Unknown employee punch ID=${userId}`);
+          continue;
+        }
+
+        const emp = empList[0];
+        const punchTime = new Date(log.record_time || log.timestamp);
+
+        console.log(
+          `📡 Syncing log → ${emp.name} (${emp.id}), Time: ${fmtPK(punchTime)}, state=${log.state}`
+        );
+
+        try {
+          const res = await injectPunch(emp.id, punchTime, log.state);
+          console.log(`📤 Attendance posted → Employee ${emp.name}, Odoo Response:`, res);
+        } catch (err) {
+          console.error("❌ Failed to post log to Odoo:", err.message);
+          console.error(err.stack);
+        }
+      }
+    } catch (err) {
+      console.error("⚠️ Failed to fetch logs from device:", err.message);
+      console.error(err.stack);
+    }
+  };
+
+  await refreshLogs();
+  setInterval(refreshLogs, 60 * 1000);
+
+  // 📡 Realtime listener → inject into Odoo
+  device.startRealtime(async (log) => {
+    try {
+      console.log("📡 Realtime RAW log:", log);
+
+      const userId = String(log.userId);
+      const empList = employeeMap.get(userId);
+      if (!empList) {
+        console.warn(`⚠️ Unknown employee punch ID=${userId}`);
+        return;
+      }
+
+      const emp = empList[0];
+      const punchTime = new Date(log.record_time || log.timestamp);
+
+      console.log(
+        `📡 Punch matched → ${emp.name} (employee_id=${emp.id}), Time=${fmtPK(
+          punchTime
+        )}, state=${log.state}`
+      );
+
+      const res = await injectPunch(emp.id, punchTime, log.state);
+      console.log(
+        `📤 Attendance posted to Odoo → Employee ${emp.name}, Odoo Response:`,
+        res
+      );
+    } catch (err) {
+      console.error("❌ Failed to inject realtime punch:", err.message);
+      console.error(err.stack);
+    }
+  });
 })();

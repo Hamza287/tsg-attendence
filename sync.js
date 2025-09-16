@@ -1,36 +1,35 @@
 // sync.js
 import { callOdoo } from "./odoo.js";
 
-let empMap = {};
-
-export async function buildEmployeeMap() {
-  const companies = await callOdoo("res.company", "search_read", [[], ["id", "name"]]);
-  console.log("🏢 Companies loaded:", companies.map(c => c.name).join(", "));
-
+export async function syncEmployees() {
   const employees = await callOdoo("hr.employee", "search_read", [
-    [], ["id", "name", "company_id", "barcode"]
+    [],
+    ["id", "name", "barcode", "company_id"],
   ]);
 
-  if (employees) {
-    employees.forEach(emp => {
-      const deviceId = emp.barcode ? String(emp.barcode).trim() : String(emp.id);
-      if (!empMap[deviceId]) empMap[deviceId] = [];
+  const map = new Map();
 
-      empMap[deviceId].push({
-        id: emp.id,
-        name: emp.name,
-        companyId: emp.company_id ? emp.company_id[0] : null,
-        companyName: emp.company_id ? emp.company_id[1] : null,
-      });
-    });
-    console.log(`📌 Loaded ${employees.length} employees across companies`);
-    console.log("📌 Map keys preview:", Object.keys(empMap).slice(0, 20));
+  for (const emp of employees) {
+    const empData = {
+      id: emp.id,
+      name: emp.name,
+      company_id: emp.company_id ? emp.company_id[0] : null,
+    };
+
+    const keyId = String(emp.id);
+    if (!map.has(keyId)) map.set(keyId, []);
+    map.get(keyId).push(empData);
+
+    if (emp.barcode) {
+      const keyBarcode = String(emp.barcode);
+      // Avoid double-adding if barcode == id
+      if (keyBarcode !== keyId) {
+        if (!map.has(keyBarcode)) map.set(keyBarcode, []);
+        map.get(keyBarcode).push(empData);
+      }
+    }
   }
 
-  return empMap;
-}
-
-// ✅ Always return array
-export function getEmployees(deviceId) {
-  return empMap[String(deviceId).trim()] || [];
+  console.log(`✅ Synced ${employees.length} employees from Odoo`);
+  return map;
 }
