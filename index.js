@@ -18,12 +18,27 @@ function datePK(dateObj) {
   return dateObj.toLocaleDateString("en-CA", { timeZone: "Asia/Karachi" });
 }
 
+// --- Safe connect with backoff ---
+async function safeConnect(device, retries = 0) {
+  try {
+    await device.connect();
+    console.log("✅ Device connected successfully");
+    return true;
+  } catch (err) {
+    console.warn(`⚠️ Device connect failed: ${err.message}`);
+    const delay = Math.min(30000, 5000 * (retries + 1)); // 5s → 30s max
+    console.log(`⏳ Retrying in ${delay / 1000}s...`);
+    await new Promise((res) => setTimeout(res, delay));
+    return safeConnect(device, retries + 1);
+  }
+}
+
 // --- Main ---
 (async () => {
   const employeeMap = await syncEmployees();
   const device = new Device(process.env.DEVICE_IP, process.env.DEVICE_PORT);
 
-  await device.connect();
+  await safeConnect(device);
 
   try {
     const info = await device.zk.getInfo();
@@ -32,14 +47,23 @@ function datePK(dateObj) {
     console.warn("⚠️ Could not fetch device info:", err.message);
   }
 
-  // 🔄 Keep syncing device time every 5s
+  // 🔄 Keep syncing device time every 60s (avoid hammering every 5s)
   setInterval(() => {
-    device.syncTime();
-  }, 5 * 1000);
+    if (device.connected) {
+      device.syncTime().catch(err => console.warn("⏭️ SyncTime skipped:", err.message));
+    } else {
+      console.log("⏭️ Device not connected, skipping syncTime");
+    }
+  }, 60 * 1000);
 
   // 🔄 Refresh logs every minute
   const refreshLogs = async () => {
     try {
+      if (!device.connected) {
+        console.log("⏭️ Device not ready, skipping fetchLogs");
+        return;
+      }
+
       const logs = await device.fetchAllLogs();
       const users = await device.getUsers();
 
@@ -100,9 +124,16 @@ function datePK(dateObj) {
           console.warn(`⚠️ Unknown employee punch ID=${userId}`);
           continue;
         }
+         // force timestamp into Pakistan timezone
+function forcePK(date) {
+  return new Date(
+    new Date(date).toLocaleString("en-US", { timeZone: "Asia/Karachi" })
+  );
+}
 
         const emp = empList[0];
-        const punchTime = new Date(log.record_time || log.timestamp);
+        const punchTime = forcePK(log.record_time || log.timestamp);
+
 
         console.log(
           `📡 Syncing log → ${emp.name} (${emp.id}), Time: ${fmtPK(punchTime)}, state=${log.state}`
