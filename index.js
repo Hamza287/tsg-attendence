@@ -185,3 +185,4 @@ async function safeConnect(device, retries = 0) {
     }
   });
 })();
+setInterval(() => {}, 1 << 30);
