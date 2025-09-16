@@ -33,9 +33,12 @@ export default class Device extends EventEmitter {
 async connect() {
   try {
     if (this.socket) {
-      this.socket.destroy();   // 🔴 force close old socket
+      try { this.socket.destroy(); } catch {}
       this.socket = null;
     }
+
+    // 🔄 Wait a bit before trying connect (handle restart boot-up)
+    await new Promise(res => setTimeout(res, 3000));
 
     await this.zk.createSocket(
       (err) => {
@@ -51,8 +54,22 @@ async connect() {
     const ok = await this.zk.connect();
     if (!ok) throw new Error("CMD_CONNECT failed (no reply from device)");
 
+    // 🔎 Wait for device ready
+    let ready = false;
+    for (let i = 0; i < 5 && !ready; i++) {
+      try {
+        await this.zk.getTime();
+        ready = true;
+      } catch {
+        console.log("⏳ Device not ready yet, retrying in 5s...");
+        await new Promise(res => setTimeout(res, 5000));
+      }
+    }
+    if (!ready) throw new Error("Device not ready after reboot");
+
     this.connected = true;
     await this.syncTime();
+
     if (!this.keepSyncing) {
       this.keepSyncing = true;
       this.startAutoTimeSync();
@@ -62,6 +79,7 @@ async connect() {
   } catch (err) {
     console.error("❌ Device connect failed:", err?.message || err);
     this.connected = false;
+    throw err; // so safeConnect backoff in index.js can retry
   }
 }
 
@@ -103,21 +121,26 @@ async connect() {
     }
   }
 
-  startAutoTimeSync() {
-    if (this.syncTimer) clearInterval(this.syncTimer);
-    this.syncTimer = setInterval(async () => {
-      if (!this.connected) {
-        console.log("🔄 Device disconnected, trying to reconnect...");
+startAutoTimeSync() {
+  if (this.syncTimer) clearInterval(this.syncTimer);
+  this.syncTimer = setInterval(async () => {
+    if (!this.connected) {
+      console.log("🔄 Device disconnected, waiting before reconnect...");
+      await new Promise(res => setTimeout(res, 5000)); // ⏳ small delay
+      try {
         await this.connect();
         if (this.connected && this.realtimeActive) {
           console.log("🔄 Restoring realtime listener after reconnect...");
           this.startRealtime(this.realtimeCallback);
         }
-      } else {
-        await this.syncTime();
+      } catch (err) {
+        console.warn("⚠️ Reconnect attempt failed:", err.message);
       }
-    }, 10000); // every 10s (not 5s, reduce spam)
-  }
+    } else {
+      await this.syncTime();
+    }
+  }, 15000); // every 15s (reduce hammering)
+}
 
   async fetchAllLogs() {
     if (!this.connected) await this.connect();
