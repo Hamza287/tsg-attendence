@@ -1,4 +1,3 @@
-// index.js
 import dotenv from "dotenv";
 import Device from "./device.js";
 import { syncEmployees } from "./sync.js";
@@ -16,6 +15,12 @@ function fmtPK(dateObj) {
 }
 function datePK(dateObj) {
   return dateObj.toLocaleDateString("en-CA", { timeZone: "Asia/Karachi" });
+}
+// ✅ Global helper: Force timestamp into PKT
+function forcePK(date) {
+  return new Date(
+    new Date(date).toLocaleString("en-US", { timeZone: "Asia/Karachi" })
+  );
 }
 
 // --- Safe connect with backoff ---
@@ -47,7 +52,7 @@ async function safeConnect(device, retries = 0) {
     console.warn("⚠️ Could not fetch device info:", err.message);
   }
 
-  // 🔄 Keep syncing device time every 60s (avoid hammering every 5s)
+  // 🔄 Keep syncing device time every 60s
   setInterval(() => {
     if (device.connected) {
       device.syncTime().catch(err => console.warn("⏭️ SyncTime skipped:", err.message));
@@ -95,12 +100,12 @@ async function safeConnect(device, retries = 0) {
 
       console.log(`📡 Filtered for today (${today}): ${todaysLogs.length}`);
 
-      // --- Show daily table (Check-In / Check-Out) ---
+      // --- Show daily table ---
       if (todaysLogs.length > 0) {
         const enriched = todaysLogs.map((log) => ({
           userId: log.userId,
           name: userMap.get(log.userId) || "Unknown",
-          timestamp: fmtPK(new Date(log.timestamp)),
+          timestamp: fmtPK(forcePK(log.timestamp)), // ✅ force PKT
           type: log.type,
           state: log.state,
         }));
@@ -124,16 +129,9 @@ async function safeConnect(device, retries = 0) {
           console.warn(`⚠️ Unknown employee punch ID=${userId}`);
           continue;
         }
-         // force timestamp into Pakistan timezone
-function forcePK(date) {
-  return new Date(
-    new Date(date).toLocaleString("en-US", { timeZone: "Asia/Karachi" })
-  );
-}
 
         const emp = empList[0];
-        const punchTime = forcePK(log.record_time || log.timestamp);
-
+        const punchTime = forcePK(log.record_time || log.timestamp); // ✅ forced to PKT
 
         console.log(
           `📡 Syncing log → ${emp.name} (${emp.id}), Time: ${fmtPK(punchTime)}, state=${log.state}`
@@ -169,12 +167,10 @@ function forcePK(date) {
       }
 
       const emp = empList[0];
-      const punchTime = new Date(log.record_time || log.timestamp);
+      const punchTime = forcePK(log.record_time || log.timestamp); // ✅ fixed here too
 
       console.log(
-        `📡 Punch matched → ${emp.name} (employee_id=${emp.id}), Time=${fmtPK(
-          punchTime
-        )}, state=${log.state}`
+        `📡 Punch matched → ${emp.name} (employee_id=${emp.id}), Time=${fmtPK(punchTime)}, state=${log.state}`
       );
 
       const res = await injectPunch(emp.id, punchTime, log.state);
